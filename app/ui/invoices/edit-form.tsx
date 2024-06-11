@@ -1,123 +1,123 @@
-'use client';
+'use server';
 
-import { CustomerField, InvoiceForm } from '@/app/lib/definitions';
-import {
-  CheckIcon,
-  ClockIcon,
-  CurrencyDollarIcon,
-  UserCircleIcon,
-} from '@heroicons/react/24/outline';
-import Link from 'next/link';
-import { Button } from '@/app/ui/button';
+import { z } from 'zod';
+import { sql } from '@vercel/postgres';
+import { revalidatePath } from 'next/cache';
+import { redirect } from 'next/navigation';
 
-export default function EditInvoiceForm({
-  invoice,
-  customers,
-}: {
-  invoice: InvoiceForm;
-  customers: CustomerField[];
-}) {
-  return (
-    <form>
-      <div className="rounded-md bg-gray-50 p-4 md:p-6">
-        {/* Customer Name */}
-        <div className="mb-4">
-          <label htmlFor="customer" className="mb-2 block text-sm font-medium">
-            Choose customer
-          </label>
-          <div className="relative">
-            <select
-              id="customer"
-              name="customerId"
-              className="peer block w-full cursor-pointer rounded-md border border-gray-200 py-2 pl-10 text-sm outline-2 placeholder:text-gray-500"
-              defaultValue={invoice.customer_id}
-            >
-              <option value="" disabled>
-                Select a customer
-              </option>
-              {customers.map((customer) => (
-                <option key={customer.id} value={customer.id}>
-                  {customer.name}
-                </option>
-              ))}
-            </select>
-            <UserCircleIcon className="pointer-events-none absolute left-3 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-gray-500" />
-          </div>
-        </div>
+const InvoiceSchema = z.object({
+  id: z.string(),
+  customerId: z.string({
+    invalid_type_error: 'Please select a customer.',
+  }),
+  amount: z.coerce
+    .number()
+    .gt(0, { message: 'Please enter an amount greater than $0.' }),
+  status: z.enum(['pending', 'paid'], {
+    invalid_type_error: 'Please select an invoice status.',
+  }),
+  date: z.string(),
+});
 
-        {/* Invoice Amount */}
-        <div className="mb-4">
-          <label htmlFor="amount" className="mb-2 block text-sm font-medium">
-            Choose an amount
-          </label>
-          <div className="relative mt-2 rounded-md">
-            <div className="relative">
-              <input
-                id="amount"
-                name="amount"
-                type="number"
-                step="0.01"
-                defaultValue={invoice.amount}
-                placeholder="Enter USD amount"
-                className="peer block w-full rounded-md border border-gray-200 py-2 pl-10 text-sm outline-2 placeholder:text-gray-500"
-              />
-              <CurrencyDollarIcon className="pointer-events-none absolute left-3 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-gray-500 peer-focus:text-gray-900" />
-            </div>
-          </div>
-        </div>
+const CreateInvoice = InvoiceSchema.omit({ id: true, date: true });
 
-        {/* Invoice Status */}
-        <fieldset>
-          <legend className="mb-2 block text-sm font-medium">
-            Set the invoice status
-          </legend>
-          <div className="rounded-md border border-gray-200 bg-white px-[14px] py-3">
-            <div className="flex gap-4">
-              <div className="flex items-center">
-                <input
-                  id="pending"
-                  name="status"
-                  type="radio"
-                  value="pending"
-                  defaultChecked={invoice.status === 'pending'}
-                  className="h-4 w-4 cursor-pointer border-gray-300 bg-gray-100 text-gray-600 focus:ring-2"
-                />
-                <label
-                  htmlFor="pending"
-                  className="ml-2 flex cursor-pointer items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-600"
-                >
-                  Pending <ClockIcon className="h-4 w-4" />
-                </label>
-              </div>
-              <div className="flex items-center">
-                <input
-                  id="paid"
-                  name="status"
-                  type="radio"
-                  value="paid"
-                  defaultChecked={invoice.status === 'paid'}
-                  className="h-4 w-4 cursor-pointer border-gray-300 bg-gray-100 text-gray-600 focus:ring-2"
-                />
-                <label
-                  htmlFor="paid"
-                  className="ml-2 flex cursor-pointer items-center gap-1.5 rounded-full bg-green-500 px-3 py-1.5 text-xs font-medium text-white"
-                >
-                  Paid <CheckIcon className="h-4 w-4" />
-                </label>
-              </div>
-            </div>
-          </div>
-        </fieldset>
-      </div>
-      <div className="mt-6 flex justify-end gap-4">
-        <Link
-          href="/dashboard/invoices"
-          className="flex h-10 items-center rounded-lg bg-gray-100 px-4 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-200"
-        >
-          Cancel
-        </Link>
-        <Button type="submit">Edit Invoice</Button>
-      </div>
-    </form>
-  );
+export type State = {
+  errors?: {
+    customerId?: string[];
+    amount?: string[];
+    status?: string[];
+  };
+  message?: string | null;
+};
+
+export async function createInvoice(prevState: State, formData: FormData) {
+  // Validate form fields using Zod
+  const validatedFields = CreateInvoice.safeParse({
+    customerId: formData.get('customerId'),
+    amount: formData.get('amount'),
+    status: formData.get('status'),
+  });
+
+  // If form validation fails, return errors early. Otherwise, continue.
+  if (!validatedFields.success) {
+    return {
+      errors: validatedFields.error.flatten().fieldErrors,
+      message: 'Missing Fields. Failed to Create Invoice.',
+    };
+  }
+
+  // Prepare data for insertion into the database
+  const { customerId, amount, status } = validatedFields.data;
+  const amountInCents = amount * 100;
+  const date = new Date().toISOString().split('T')[0];
+
+  // Test it out:
+  // console.log();
+  // Insert data into the database
+  try {
+    await sql`
+        INSERT INTO invoices (customer_id, amount, status, date)
+        VALUES (${customerId}, ${amountInCents}, ${status}, ${date})`;
+  } catch (error) {
+    return {
+      message: 'Database Error: Failed to Create Invoice.',
+    };
+  }
+
+  // Revalidate the cache for the invoices page and redirect the user.
+  revalidatePath('/dashboard/invoices');
+  redirect('/dashboard/invoices');
+}
+
+// Use Zod to update the expected types
+const UpdateInvoice = InvoiceSchema.omit({ id: true, date: true });
+
+// ...
+
+export async function updateInvoice(
+  id: string,
+  prevState: State,
+  formData: FormData,
+) {
+  // Validate form fields using Zod
+  const validatedFields = UpdateInvoice.safeParse({
+    customerId: formData.get('customerId'),
+    amount: formData.get('amount'),
+    status: formData.get('status'),
+  });
+
+  // If form validation fails, return errors early. Otherwise, continue.
+  if (!validatedFields.success) {
+    return {
+      errors: validatedFields.error.flatten().fieldErrors,
+      message: 'Missing Fields. Failed to Update Invoice.',
+    };
+  }
+
+  // Prepare data for insertion into the database
+  const { customerId, amount, status } = validatedFields.data;
+  const amountInCents = amount * 100;
+  // Insert data into the database
+  try {
+    await sql`
+      UPDATE invoices
+      SET customer_id = ${customerId}, amount = ${amountInCents}, status = ${status}
+      WHERE id = ${id}
+    `;
+  } catch (error) {
+    return { message: 'Database Error: Failed to Update Invoice.' };
+  }
+  // Revalidate the cache for the invoices page and redirect the user.
+  revalidatePath('/dashboard/invoices');
+  redirect('/dashboard/invoices');
+}
+
+export async function deleteInvoice(id: string) {
+  // throw new Error('Failed to Delete Invoice');
+  try {
+    await sql`DELETE FROM invoices WHERE id = ${id}`;
+    revalidatePath('/dashboard/invoices');
+  } catch (error) {
+    return { message: 'Database Error: Failed to Delete Invoice.' };
+  }
 }
